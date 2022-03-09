@@ -11,7 +11,7 @@ find_package(OpenGL REQUIRED)
 INCLUDE(FindPkgConfig)
 PKG_SEARCH_MODULE(SDL2 REQUIRED sdl2)
 
-add_executable(openxr-example main.c)
+add_executable(openxr-example main.cpp)
 
 # First try openxr.pc from OpenXR SDK
 include(FindPkgConfig)
@@ -36,7 +36,9 @@ else()
   target_link_libraries(openxr-example PRIVATE OpenXR::openxr_loader)
 endif()
 
-target_link_libraries(openxr-example PRIVATE Xrandr ${X11_LIBRARIES} ${OPENGL_LIBRARIES} ${SDL2_LIBRARIES} m)
+add_library(STB_IMAGE stb_image.cpp)
+
+target_link_libraries(openxr-example PRIVATE Xrandr ${X11_LIBRARIES} ${OPENGL_LIBRARIES} ${SDL2_LIBRARIES} m STB_IMAGE)
 target_include_directories(openxr-example PRIVATE ${SDL2_INCLUDE_DIRS})
 
 if(MSVC)
