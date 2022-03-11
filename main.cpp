@@ -36,6 +36,10 @@
 #include <string>
 #include "stb_image.h"
 
+#include <ros/ros.h>
+#include <image_transport/image_transport.h>
+#include <cv_bridge/cv_bridge.h>
+
 #define degrees_to_radians(angle_degrees) ((angle_degrees)*M_PI / 180.0)
 #define radians_to_degrees(angle_radians) ((angle_radians)*180.0 / M_PI)
 
@@ -330,6 +334,15 @@ XrQuaternionf ToQuaternion(double yaw, double pitch, double roll) // yaw (Z), pi
     return q;
 }
 
+bool new_img_msg = false;
+sensor_msgs::ImageConstPtr image_msg;
+
+void imageCallback(const sensor_msgs::ImageConstPtr& msg)
+{
+    image_msg = msg;
+    new_img_msg = true;
+}
+
 // =============================================================================
 // OpenGL rendering code at the end of the file
 // =============================================================================
@@ -367,6 +380,9 @@ render_frame(int w,
 #endif
 // =============================================================================
 
+void init_ros_cv();
+
+void update_texture();
 
 
 // true if XrResult is a success code, else print error message and return false
@@ -1128,6 +1144,8 @@ main(int argc, char** argv)
 		return 1;
 	}
 
+    init_ros_cv();
+
 	XrSessionActionSetsAttachInfo actionset_attach_info = {
 	    .type = XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO,
 	    .next = NULL,
@@ -1828,7 +1846,7 @@ init_gl(uint32_t view_count,
     int width, height, num_channels;
     std::string file_path = __FILE__;
     std::string cur_path = file_path.substr(0, file_path.rfind("/"));
-    std::string image_path = cur_path + "/container.jpg";
+    std::string image_path = cur_path + "/mars.png";
     unsigned char* im_data = stbi_load(image_path.c_str(), &width, &height, &num_channels, 0);
     if (im_data){
         printf("****** Image Size, %d, %d, %d \n", width, height, num_channels);
@@ -1849,6 +1867,45 @@ init_gl(uint32_t view_count,
     stbi_image_free(im_data);
 
 	return 0;
+}
+
+image_transport::Subscriber sub;
+image_transport::ImageTransport* it;
+ros::NodeHandle* nh;
+void init_ros_cv(){
+    int argc = 0;
+    char** argv = 0;
+    ros::init(argc, argv, "openxr_image_listener");
+    nh = new ros::NodeHandle();
+
+    it = new image_transport::ImageTransport(*nh);
+//    sub = new ros::Subscriber();
+    sub = it->subscribe("/ambf/env/cameras/default_camera/ImageData", 1, imageCallback);
+}
+
+void update_texture(){
+    ros::spinOnce();
+    if (new_img_msg){
+        printf("Copying Image\n");
+        printf("Image Data W: %d, H: %d \n", image_msg->width, image_msg->height);
+        glBindTexture(GL_TEXTURE_2D, textureID);
+        // set the texture wrapping/filtering options (on the currently bound texture object)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexSubImage2D(GL_TEXTURE_2D,
+                        0,
+                        0,
+                        0,
+                        image_msg->width,
+                        image_msg->height,
+                        GL_RGB,
+                        GL_UNSIGNED_BYTE,
+                        image_msg->data.data());
+        glGenerateMipmap(GL_TEXTURE_2D);
+        new_img_msg = false;
+    }
 }
 
 static void
@@ -1905,6 +1962,7 @@ render_frame(int w,
 
 
 	glUseProgram(shader_program_id);
+    update_texture();
     glBindTexture(GL_TEXTURE_2D, textureID);
 	glBindVertexArray(VAO);
 

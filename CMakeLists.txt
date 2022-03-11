@@ -7,9 +7,12 @@ endif(POLICY CMP0072)
 
 find_package(X11 REQUIRED)
 find_package(OpenGL REQUIRED)
+find_package(catkin REQUIRED COMPONENTS roscpp sensor_msgs cv_bridge image_transport)
 
 INCLUDE(FindPkgConfig)
 PKG_SEARCH_MODULE(SDL2 REQUIRED sdl2)
+
+include_directories(${catkin_INCLUDE_DIRS})
 
 add_executable(openxr-example main.cpp)
 
@@ -38,7 +41,7 @@ endif()
 
 add_library(STB_IMAGE stb_image.cpp)
 
-target_link_libraries(openxr-example PRIVATE Xrandr ${X11_LIBRARIES} ${OPENGL_LIBRARIES} ${SDL2_LIBRARIES} m STB_IMAGE)
+target_link_libraries(openxr-example PRIVATE Xrandr ${X11_LIBRARIES} ${OPENGL_LIBRARIES} ${SDL2_LIBRARIES} m STB_IMAGE ${catkin_LIBRARIES})
 target_include_directories(openxr-example PRIVATE ${SDL2_INCLUDE_DIRS})
 
 if(MSVC)
