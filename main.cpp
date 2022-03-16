@@ -334,15 +334,6 @@ XrQuaternionf ToQuaternion(double yaw, double pitch, double roll) // yaw (Z), pi
     return q;
 }
 
-bool new_img_msg = false;
-sensor_msgs::ImageConstPtr image_msg;
-
-void imageCallback(const sensor_msgs::ImageConstPtr& msg)
-{
-    image_msg = msg;
-    new_img_msg = true;
-}
-
 // =============================================================================
 // OpenGL rendering code at the end of the file
 // =============================================================================
@@ -361,13 +352,15 @@ init_gl(uint32_t view_count,
         uint32_t* swapchain_lengths,
         GLuint*** framebuffers,
         GLuint* shader_program_id,
-        GLuint* VAO);
+        GLuint* VAO,
+        GLuint* VAO_quad);
 
 void
 render_frame(int w,
              int h,
              GLuint shader_program_id,
              GLuint VAO,
+             GLuint VAO_quad,
              XrTime predictedDisplayTime,
              int view_index,
              XrSpaceLocation* hand_locations,
@@ -381,8 +374,6 @@ render_frame(int w,
 // =============================================================================
 
 void init_ros_cv();
-
-void update_texture();
 
 
 // true if XrResult is a success code, else print error message and return false
@@ -615,6 +606,7 @@ main(int argc, char** argv)
 
 		GLuint shader_program_id;
 		GLuint VAO;
+        GLuint VAO_quad;
 	} gl_rendering;
 	gl_rendering.near_z = 0.01f;
 	gl_rendering.far_z = 100.0f;
@@ -1139,7 +1131,7 @@ main(int argc, char** argv)
 
 	// Set up rendering (compile shaders, ...) before starting the session
 	if (init_gl(view_count, swapchain_lengths, &gl_rendering.framebuffers,
-	            &gl_rendering.shader_program_id, &gl_rendering.VAO) != 0) {
+                &gl_rendering.shader_program_id, &gl_rendering.VAO, &gl_rendering.VAO_quad) != 0) {
 		printf("OpenGl setup failed!\n");
 		return 1;
 	}
@@ -1534,7 +1526,7 @@ main(int argc, char** argv)
 			glXMakeCurrent(graphics_binding_gl.xDisplay, graphics_binding_gl.glxDrawable,
 			               graphics_binding_gl.glxContext);
 
-            render_frame(w, h, gl_rendering.shader_program_id, gl_rendering.VAO,
+            render_frame(w, h, gl_rendering.shader_program_id, gl_rendering.VAO, gl_rendering.VAO_quad,
                          frame_state.predictedDisplayTime, i, hand_locations, projection_matrix,
                          view_matrix, gl_rendering.framebuffers[i][acquired_index],
                          images[i][acquired_index].image, depth.supported, depth_image);
@@ -1710,9 +1702,11 @@ static const char* vertexshader =
     "layout(location = 5) in vec2 aColor;\n"
     "out vec2 vertexColor;\n"
     "void main() {\n"
-    "	gl_Position = proj * view * model * vec4(aPos.x, aPos.y, aPos.z, "
-    "1.0);\n"
-    "	vertexColor = aColor;\n"
+    "mat4 viewRot = mat4(mat3(view));\n"
+    "vec4 pos = proj * viewRot * vec4(aPos.x, aPos.y, aPos.z, 1.0);\n"
+    "gl_Position = pos.xyww;\n"
+//    "vertexColor = aPos.xy;\n"
+    "vertexColor = aColor;\n"
     "}\n";
 
 static const char* fragmentshader =
@@ -1729,15 +1723,82 @@ static const char* fragmentshader =
     "FragColor = texture2D(texture, vertexColor);\n"
     "}\n";
 
+struct TextureData{
+    TextureData(int index){
+        texture_index = index;
+    }
 
-unsigned int textureID;
+    void initialize(int width, int height, int num_channels, unsigned char* data){
+        printf("****** Image Size, %d, %d, %d \n", width, height, num_channels);
+        glGenTextures(1, &textureID);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, textureID);
+        // set the texture wrapping/filtering options (on the currently bound texture object)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        // load and generate the texture
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, data);
+        glGenerateMipmap(GL_TEXTURE_2D);
+    }
+
+    void update_texture(GLuint shader_program_id, int view_index){
+        if (view_index != texture_index){
+            return;
+        }
+        if (new_msg){
+            GLint textLocation = glGetUniformLocation(shader_program_id, "texture");
+            glActiveTexture(GL_TEXTURE0 + texture_index);
+            glBindTexture(GL_TEXTURE_2D, textureID);
+            glUniform1i(textLocation, 0);
+            // set the texture wrapping/filtering options (on the currently bound texture object)
+    //        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    //        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    //        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    //        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexSubImage2D(GL_TEXTURE_2D,
+                            0,
+                            0,
+                            0,
+                            image_msg->width,
+                            image_msg->height,
+                            GL_RGB,
+                            GL_UNSIGNED_BYTE,
+                            image_msg->data.data());
+    //        glGenerateMipmap(GL_TEXTURE_2D);
+            new_msg = false;
+        }
+    }
+
+    void subscribe(image_transport::ImageTransport* it, std::string topic_name){
+        image_sub = it->subscribe(topic_name, 1, &TextureData::imageCallback, this);
+    }
+
+    void imageCallback(const sensor_msgs::ImageConstPtr& msg){
+        image_msg = msg;
+        new_msg = true;
+    }
+
+    unsigned int textureID;
+    int width;
+    int height;
+    bool new_msg;
+    int texture_index;
+    sensor_msgs::ImageConstPtr image_msg;
+    image_transport::Subscriber image_sub;
+};
+
+TextureData leftTex(0);
+TextureData rightTex(1);
 
 int
 init_gl(uint32_t view_count,
         uint32_t* swapchain_lengths,
         GLuint*** framebuffers,
         GLuint* shader_program_id,
-        GLuint* VAO)
+        GLuint* VAO,
+        GLuint* VAO_quad)
 {
 
 	/* Allocate resources that we use for our own rendering.
@@ -1800,48 +1861,71 @@ init_gl(uint32_t view_count,
 	}
 
 	glDeleteShader(vertex_shader_id);
-	glDeleteShader(fragment_shader_id);
+    glDeleteShader(fragment_shader_id);
 
-	float vertices[] = {-0.5f, -0.5f, -0.5f, 0.0f, 0.0f, 0.5f,  -0.5f, -0.5f, 1.0f, 0.0f,
-	                    0.5f,  0.5f,  -0.5f, 1.0f, 1.0f, 0.5f,  0.5f,  -0.5f, 1.0f, 1.0f,
-	                    -0.5f, 0.5f,  -0.5f, 0.0f, 1.0f, -0.5f, -0.5f, -0.5f, 0.0f, 0.0f,
+    float cube_vertices[] = {-0.8f, -0.5f, -0.5f, 0.0f, 0.0f, 0.5f,  -0.5f, -0.5f, 1.0f, 0.0f,
+                        0.5f,  0.5f,  -0.5f, 1.0f, 1.0f, 0.5f,  0.5f,  -0.5f, 1.0f, 1.0f,
+                        -0.5f, 0.5f,  -0.5f, 0.0f, 1.0f, -0.5f, -0.5f, -0.5f, 0.0f, 0.0f,
 
-	                    -0.5f, -0.5f, 0.5f,  0.0f, 0.0f, 0.5f,  -0.5f, 0.5f,  1.0f, 0.0f,
-	                    0.5f,  0.5f,  0.5f,  1.0f, 1.0f, 0.5f,  0.5f,  0.5f,  1.0f, 1.0f,
-	                    -0.5f, 0.5f,  0.5f,  0.0f, 1.0f, -0.5f, -0.5f, 0.5f,  0.0f, 0.0f,
+                        -0.5f, -0.5f, 0.5f,  0.0f, 0.0f, 0.5f,  -0.5f, 0.5f,  1.0f, 0.0f,
+                        0.5f,  0.5f,  0.5f,  1.0f, 1.0f, 0.5f,  0.5f,  0.5f,  1.0f, 1.0f,
+                        -0.5f, 0.5f,  0.5f,  0.0f, 1.0f, -0.5f, -0.5f, 0.5f,  0.0f, 0.0f,
 
-	                    -0.5f, 0.5f,  0.5f,  1.0f, 0.0f, -0.5f, 0.5f,  -0.5f, 1.0f, 1.0f,
-	                    -0.5f, -0.5f, -0.5f, 0.0f, 1.0f, -0.5f, -0.5f, -0.5f, 0.0f, 1.0f,
-	                    -0.5f, -0.5f, 0.5f,  0.0f, 0.0f, -0.5f, 0.5f,  0.5f,  1.0f, 0.0f,
+                        -0.5f, 0.5f,  0.5f,  1.0f, 0.0f, -0.5f, 0.5f,  -0.5f, 1.0f, 1.0f,
+                        -0.5f, -0.5f, -0.5f, 0.0f, 1.0f, -0.5f, -0.5f, -0.5f, 0.0f, 1.0f,
+                        -0.5f, -0.5f, 0.5f,  0.0f, 0.0f, -0.5f, 0.5f,  0.5f,  1.0f, 0.0f,
 
-	                    0.5f,  0.5f,  0.5f,  1.0f, 0.0f, 0.5f,  0.5f,  -0.5f, 1.0f, 1.0f,
-	                    0.5f,  -0.5f, -0.5f, 0.0f, 1.0f, 0.5f,  -0.5f, -0.5f, 0.0f, 1.0f,
-	                    0.5f,  -0.5f, 0.5f,  0.0f, 0.0f, 0.5f,  0.5f,  0.5f,  1.0f, 0.0f,
+                        0.5f,  0.5f,  0.5f,  1.0f, 0.0f, 0.5f,  0.5f,  -0.5f, 1.0f, 1.0f,
+                        0.5f,  -0.5f, -0.5f, 0.0f, 1.0f, 0.5f,  -0.5f, -0.5f, 0.0f, 1.0f,
+                        0.5f,  -0.5f, 0.5f,  0.0f, 0.0f, 0.5f,  0.5f,  0.5f,  1.0f, 0.0f,
 
-	                    -0.5f, -0.5f, -0.5f, 0.0f, 1.0f, 0.5f,  -0.5f, -0.5f, 1.0f, 1.0f,
-	                    0.5f,  -0.5f, 0.5f,  1.0f, 0.0f, 0.5f,  -0.5f, 0.5f,  1.0f, 0.0f,
-	                    -0.5f, -0.5f, 0.5f,  0.0f, 0.0f, -0.5f, -0.5f, -0.5f, 0.0f, 1.0f,
+                        -0.5f, -0.5f, -0.5f, 0.0f, 1.0f, 0.5f,  -0.5f, -0.5f, 1.0f, 1.0f,
+                        0.5f,  -0.5f, 0.5f,  1.0f, 0.0f, 0.5f,  -0.5f, 0.5f,  1.0f, 0.0f,
+                        -0.5f, -0.5f, 0.5f,  0.0f, 0.0f, -0.5f, -0.5f, -0.5f, 0.0f, 1.0f,
 
-	                    -0.5f, 0.5f,  -0.5f, 0.0f, 1.0f, 0.5f,  0.5f,  -0.5f, 1.0f, 1.0f,
-	                    0.5f,  0.5f,  0.5f,  1.0f, 0.0f, 0.5f,  0.5f,  0.5f,  1.0f, 0.0f,
-	                    -0.5f, 0.5f,  0.5f,  0.0f, 0.0f, -0.5f, 0.5f,  -0.5f, 0.0f, 1.0f};
+                        -0.5f, 0.5f,  -0.5f, 0.0f, 1.0f, 0.5f,  0.5f,  -0.5f, 1.0f, 1.0f,
+                        0.5f,  0.5f,  0.5f,  1.0f, 0.0f, 0.5f,  0.5f,  0.5f,  1.0f, 0.0f,
+                        -0.5f, 0.5f,  0.5f,  0.0f, 0.0f, -0.5f, 0.5f,  -0.5f, 0.0f, 1.0f};
 
-	GLuint VBOs[1];
-	glGenBuffers(1, VBOs);
+    float quad_vertices[] = {-1.f, 1.f, -1.f, 0.0f, 1.0f,
+                             -1.f, -1.f, -1.f, 0.0f, 0.0f,
+                             1.f, -1.f,  -1.f, 1.0f, 0.0f,
+
+                             1.f,  -1.f,  -1.f, 1.0f, 0.0f,
+                             1.f, 1.f,  -1.f, 1.0f, 1.0f,
+                             -1.f, 1.f, -1.f, 0.0f, 1.0f};
+
+    GLuint VBOs[2];
+    glGenBuffers(1, &VBOs[0]);
 
 	glGenVertexArrays(1, VAO);
 
 	glBindVertexArray(*VAO);
-	glBindBuffer(GL_ARRAY_BUFFER, VBOs[0]);
-	glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_DYNAMIC_DRAW);
+    glBindBuffer(GL_ARRAY_BUFFER, VBOs[0]);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(cube_vertices), cube_vertices, GL_DYNAMIC_DRAW);
 	glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)0);
 	glEnableVertexAttribArray(0);
 
-	glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_DYNAMIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(cube_vertices), cube_vertices, GL_DYNAMIC_DRAW);
 	glVertexAttribPointer(5, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(3 * sizeof(float)));
 	glEnableVertexAttribArray(5);
 
-	glEnable(GL_DEPTH_TEST);
+    glGenBuffers(1, &VBOs[1]);
+
+    glGenVertexArrays(1, VAO_quad);
+
+    glBindVertexArray(*VAO_quad);
+    glBindBuffer(GL_ARRAY_BUFFER, VBOs[1]);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(quad_vertices), quad_vertices, GL_DYNAMIC_DRAW);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
+
+    glBufferData(GL_ARRAY_BUFFER, sizeof(quad_vertices), quad_vertices, GL_DYNAMIC_DRAW);
+    glVertexAttribPointer(5, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(3* sizeof(float)));
+    glEnableVertexAttribArray(5);
+
+
+//    glEnable(GL_DEPTH_TEST);
 
     int width, height, num_channels;
     std::string file_path = __FILE__;
@@ -1849,17 +1933,8 @@ init_gl(uint32_t view_count,
     std::string image_path = cur_path + "/mars.png";
     unsigned char* im_data = stbi_load(image_path.c_str(), &width, &height, &num_channels, 0);
     if (im_data){
-        printf("****** Image Size, %d, %d, %d \n", width, height, num_channels);
-        glGenTextures(1, &textureID);
-        glBindTexture(GL_TEXTURE_2D, textureID);
-        // set the texture wrapping/filtering options (on the currently bound texture object)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        // load and generate the texture
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, im_data);
-        glGenerateMipmap(GL_TEXTURE_2D);
+        leftTex.initialize(width, height, num_channels, im_data);
+        rightTex.initialize(width, height, num_channels, im_data);
     }
     else{
         printf("****** Failed to load image: %s \n", image_path.c_str());
@@ -1869,7 +1944,6 @@ init_gl(uint32_t view_count,
 	return 0;
 }
 
-image_transport::Subscriber sub;
 image_transport::ImageTransport* it;
 ros::NodeHandle* nh;
 void init_ros_cv(){
@@ -1880,32 +1954,9 @@ void init_ros_cv(){
 
     it = new image_transport::ImageTransport(*nh);
 //    sub = new ros::Subscriber();
-    sub = it->subscribe("/ambf/env/cameras/default_camera/ImageData", 1, imageCallback);
-}
-
-void update_texture(){
-    ros::spinOnce();
-    if (new_img_msg){
-        printf("Copying Image\n");
-        printf("Image Data W: %d, H: %d \n", image_msg->width, image_msg->height);
-        glBindTexture(GL_TEXTURE_2D, textureID);
-        // set the texture wrapping/filtering options (on the currently bound texture object)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexSubImage2D(GL_TEXTURE_2D,
-                        0,
-                        0,
-                        0,
-                        image_msg->width,
-                        image_msg->height,
-                        GL_RGB,
-                        GL_UNSIGNED_BYTE,
-                        image_msg->data.data());
-        glGenerateMipmap(GL_TEXTURE_2D);
-        new_img_msg = false;
-    }
+//    leftTex.image_sub = it->subscribe("/ambf/env/cameras/cameraL/ImageData", 1, TextureData::imageCallback, &leftTex);
+    leftTex.subscribe(it, "/ambf/env/cameras/cameraL/ImageData");
+    rightTex.subscribe(it, "/ambf/env/cameras/cameraR/ImageData");
 }
 
 static void
@@ -1930,11 +1981,21 @@ render_rotated_cube(
 	glDrawArrays(GL_TRIANGLES, 0, 36);
 }
 
+void render_quad(vec3_t position, float rotation, int modelLoc){
+    mat4_t rotationmatrix = m4_rotation_y(degrees_to_radians(rotation));
+    mat4_t translation = m4_translation(position);
+    mat4_t modelmatrix = m4_mul(translation, rotationmatrix);
+
+    glUniformMatrix4fv(modelLoc, 1, GL_FALSE, (float*)modelmatrix.m);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+}
+
 void
 render_frame(int w,
              int h,
              GLuint shader_program_id,
              GLuint VAO,
+             GLuint VAO_quad,
              XrTime predictedDisplayTime,
              int view_index,
              XrSpaceLocation* hand_locations,
@@ -1962,8 +2023,14 @@ render_frame(int w,
 
 
 	glUseProgram(shader_program_id);
-    update_texture();
-    glBindTexture(GL_TEXTURE_2D, textureID);
+    ros::spinOnce();
+    if (view_index == 0){
+        leftTex.update_texture(shader_program_id, view_index);
+    }
+    else if (view_index == 1){
+        rightTex.update_texture(shader_program_id, view_index);
+    }
+//    printf("View Index: %d \n", view_index);
 	glBindVertexArray(VAO);
 
 	int modelLoc = glGetUniformLocation(shader_program_id, "model");
@@ -1975,22 +2042,22 @@ render_frame(int w,
 
 
 	// render scene with 4 colorful cubes
-	{
-		// the special color value (0, 0, 0) will get replaced by some UV color in the shader
-		glUniform3f(colorLoc, 0.0, 0.0, 0.0);
+//	{
+//		// the special color value (0, 0, 0) will get replaced by some UV color in the shader
+//		glUniform3f(colorLoc, 0.0, 0.0, 0.0);
 
-		double display_time_seconds = ((double)predictedDisplayTime) / (1000. * 1000. * 1000.);
-        const float rotations_per_sec = .1;
-		float angle = ((long)(display_time_seconds * 360. * rotations_per_sec)) % 360;
+//		double display_time_seconds = ((double)predictedDisplayTime) / (1000. * 1000. * 1000.);
+//        const float rotations_per_sec = .1;
+//		float angle = ((long)(display_time_seconds * 360. * rotations_per_sec)) % 360;
 
-		float dist = 1.5f;
-		float height = 0.5f;
-        float size = 1.5;
-        render_rotated_cube(vec3(0, height, -dist), size, angle, projectionmatrix.m, modelLoc);
-        render_rotated_cube(vec3(0, height, dist), size, angle, projectionmatrix.m, modelLoc);
-        render_rotated_cube(vec3(dist, height, 0), size, angle, projectionmatrix.m, modelLoc);
-        render_rotated_cube(vec3(-dist, height, 0), size, angle, projectionmatrix.m, modelLoc);
-	}
+//		float dist = 1.5f;
+//		float height = 0.5f;
+//        float size = 1.5;
+//        render_rotated_cube(vec3(0, height, -dist), size, angle, projectionmatrix.m, modelLoc);
+//        render_rotated_cube(vec3(0, height, dist), size, angle, projectionmatrix.m, modelLoc);
+//        render_rotated_cube(vec3(dist, height, 0), size, angle, projectionmatrix.m, modelLoc);
+//        render_rotated_cube(vec3(-dist, height, 0), size, angle, projectionmatrix.m, modelLoc);
+//	}
 
 	// render controllers
 	for (int hand = 0; hand < 2; hand++) {
@@ -2013,6 +2080,13 @@ render_frame(int w,
 		             &scale, modelLoc);
 	}
 
+    // render quad
+    glBindVertexArray(VAO_quad);
+    // render scene with 4 colorful cubes
+    {
+        double display_time_seconds = ((double)predictedDisplayTime) / (1000. * 1000. * 1000.);
+        render_quad(vec3(0, 0, 0), 0., modelLoc);
+    }
 
 	// blit left eye to desktop window
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
