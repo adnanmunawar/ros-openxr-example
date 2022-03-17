@@ -373,9 +373,6 @@ render_frame(int w,
 #endif
 // =============================================================================
 
-void init_ros_cv();
-
-
 // true if XrResult is a success code, else print error message and return false
 bool
 xr_check(XrInstance instance, XrResult result, const char* format, ...)
@@ -535,6 +532,110 @@ load_extension_function_pointers(XrInstance instance)
 
 	return true;
 }
+
+struct TextureData{
+    TextureData(int index){
+        texture_index = index;
+    }
+
+    bool load_image(std::string filepath){
+        unsigned char* data = stbi_load(filepath.c_str(), &width, &height, &num_channels, 0);
+        if (!data){
+            return 0;
+        }
+        printf("****** Image Size, %d, %d, %d \n", width, height, num_channels);
+        glGenTextures(1, &textureID);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, textureID);
+        // set the texture wrapping/filtering options (on the currently bound texture object)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        // load and generate the texture
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, data);
+//        glGenerateMipmap(GL_TEXTURE_2D);
+        stbi_image_free(data);
+        return 1;
+    }
+
+    void update_texture(GLuint shader_program_id, int view_index){
+        if (view_index != texture_index){
+            return;
+        }
+        ros::spinOnce();
+        if (new_msg){
+            GLint textLocation = glGetUniformLocation(shader_program_id, "texture");
+            glActiveTexture(GL_TEXTURE0 + texture_index);
+            glBindTexture(GL_TEXTURE_2D, textureID);
+            glUniform1i(textLocation, 0);
+            // set the texture wrapping/filtering options (on the currently bound texture object)
+            if (image_msg->width == width && image_msg->height == height){
+                glTexSubImage2D(GL_TEXTURE_2D,
+                                0,
+                                0,
+                                0,
+                                image_msg->width,
+                                image_msg->height,
+                                GL_RGB,
+                                GL_UNSIGNED_BYTE,
+                                image_msg->data.data());
+
+//                glGenerateMipmap(GL_TEXTURE_2D);
+            }
+            else{
+                width = image_msg->width;
+                height = image_msg->height;
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, image_msg->data.data());
+//                glGenerateMipmap(GL_TEXTURE_2D);
+            }
+    //        glGenerateMipmap(GL_TEXTURE_2D);
+            new_msg = false;
+        }
+    }
+
+    void subscribe(image_transport::ImageTransport* it, std::string topic_name){
+        image_sub = it->subscribe(topic_name, 1, &TextureData::imageCallback, this);
+    }
+
+    void imageCallback(const sensor_msgs::ImageConstPtr& msg){
+        image_msg = msg;
+        new_msg = true;
+    }
+
+    unsigned int textureID;
+    int width;
+    int height;
+    int num_channels;
+    bool new_msg;
+    int texture_index;
+    sensor_msgs::ImageConstPtr image_msg;
+    image_transport::Subscriber image_sub;
+};
+
+TextureData leftTex(0);
+TextureData rightTex(1);
+
+struct StereoImageNode{
+    StereoImageNode(){
+        int argc = 0;
+        char** argv = 0;
+        ros::init(argc, argv, "openxr_image_listener");
+        nh = new ros::NodeHandle();
+
+        it = new image_transport::ImageTransport(*nh);
+    }
+    ~StereoImageNode(){
+        delete it;
+        delete nh;
+    }
+    void init(std::string left_image_topic, std::string right_image_topic){
+        leftTex.subscribe(it, left_image_topic);
+        rightTex.subscribe(it, right_image_topic);
+    }
+    image_transport::ImageTransport* it;
+    ros::NodeHandle* nh;
+};
 
 int
 main(int argc, char** argv)
@@ -1136,7 +1237,8 @@ main(int argc, char** argv)
 		return 1;
 	}
 
-    init_ros_cv();
+    StereoImageNode stereoNode;
+    stereoNode.init("/ambf/env/cameras/cameraL/ImageData", "/ambf/env/cameras/cameraR/ImageData");
 
 	XrSessionActionSetsAttachInfo actionset_attach_info = {
 	    .type = XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO,
@@ -1723,75 +1825,6 @@ static const char* fragmentshader =
     "FragColor = texture2D(texture, vertexColor);\n"
     "}\n";
 
-struct TextureData{
-    TextureData(int index){
-        texture_index = index;
-    }
-
-    void initialize(int width, int height, int num_channels, unsigned char* data){
-        printf("****** Image Size, %d, %d, %d \n", width, height, num_channels);
-        glGenTextures(1, &textureID);
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, textureID);
-        // set the texture wrapping/filtering options (on the currently bound texture object)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        // load and generate the texture
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, data);
-        glGenerateMipmap(GL_TEXTURE_2D);
-    }
-
-    void update_texture(GLuint shader_program_id, int view_index){
-        if (view_index != texture_index){
-            return;
-        }
-        if (new_msg){
-            GLint textLocation = glGetUniformLocation(shader_program_id, "texture");
-            glActiveTexture(GL_TEXTURE0 + texture_index);
-            glBindTexture(GL_TEXTURE_2D, textureID);
-            glUniform1i(textLocation, 0);
-            // set the texture wrapping/filtering options (on the currently bound texture object)
-    //        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-    //        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-    //        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-    //        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-            glTexSubImage2D(GL_TEXTURE_2D,
-                            0,
-                            0,
-                            0,
-                            image_msg->width,
-                            image_msg->height,
-                            GL_RGB,
-                            GL_UNSIGNED_BYTE,
-                            image_msg->data.data());
-    //        glGenerateMipmap(GL_TEXTURE_2D);
-            new_msg = false;
-        }
-    }
-
-    void subscribe(image_transport::ImageTransport* it, std::string topic_name){
-        image_sub = it->subscribe(topic_name, 1, &TextureData::imageCallback, this);
-    }
-
-    void imageCallback(const sensor_msgs::ImageConstPtr& msg){
-        image_msg = msg;
-        new_msg = true;
-    }
-
-    unsigned int textureID;
-    int width;
-    int height;
-    bool new_msg;
-    int texture_index;
-    sensor_msgs::ImageConstPtr image_msg;
-    image_transport::Subscriber image_sub;
-};
-
-TextureData leftTex(0);
-TextureData rightTex(1);
-
 int
 init_gl(uint32_t view_count,
         uint32_t* swapchain_lengths,
@@ -1887,13 +1920,13 @@ init_gl(uint32_t view_count,
                         0.5f,  0.5f,  0.5f,  1.0f, 0.0f, 0.5f,  0.5f,  0.5f,  1.0f, 0.0f,
                         -0.5f, 0.5f,  0.5f,  0.0f, 0.0f, -0.5f, 0.5f,  -0.5f, 0.0f, 1.0f};
 
-    float quad_vertices[] = {-1.f, 1.f, -1.f, 0.0f, 1.0f,
-                             -1.f, -1.f, -1.f, 0.0f, 0.0f,
-                             1.f, -1.f,  -1.f, 1.0f, 0.0f,
+    float quad_vertices[] = {-1.f, 1.f, -1.f, 0.0f, 0.0f,
+                             -1.f, -1.f, -1.f, 0.0f, 1.0f,
+                             1.f, -1.f,  -1.f, 1.0f, 1.0f,
 
-                             1.f,  -1.f,  -1.f, 1.0f, 0.0f,
-                             1.f, 1.f,  -1.f, 1.0f, 1.0f,
-                             -1.f, 1.f, -1.f, 0.0f, 1.0f};
+                             1.f,  -1.f,  -1.f, 1.0f, 1.0f,
+                             1.f, 1.f,  -1.f, 1.0f, 0.0f,
+                             -1.f, 1.f, -1.f, 0.0f, 0.0f};
 
     GLuint VBOs[2];
     glGenBuffers(1, &VBOs[0]);
@@ -1926,37 +1959,17 @@ init_gl(uint32_t view_count,
 
 
 //    glEnable(GL_DEPTH_TEST);
-
-    int width, height, num_channels;
     std::string file_path = __FILE__;
     std::string cur_path = file_path.substr(0, file_path.rfind("/"));
     std::string image_path = cur_path + "/mars.png";
-    unsigned char* im_data = stbi_load(image_path.c_str(), &width, &height, &num_channels, 0);
-    if (im_data){
-        leftTex.initialize(width, height, num_channels, im_data);
-        rightTex.initialize(width, height, num_channels, im_data);
+    if(leftTex.load_image(image_path) && rightTex.load_image(image_path)){
     }
     else{
         printf("****** Failed to load image: %s \n", image_path.c_str());
+        return 1;
     }
-    stbi_image_free(im_data);
 
 	return 0;
-}
-
-image_transport::ImageTransport* it;
-ros::NodeHandle* nh;
-void init_ros_cv(){
-    int argc = 0;
-    char** argv = 0;
-    ros::init(argc, argv, "openxr_image_listener");
-    nh = new ros::NodeHandle();
-
-    it = new image_transport::ImageTransport(*nh);
-//    sub = new ros::Subscriber();
-//    leftTex.image_sub = it->subscribe("/ambf/env/cameras/cameraL/ImageData", 1, TextureData::imageCallback, &leftTex);
-    leftTex.subscribe(it, "/ambf/env/cameras/cameraL/ImageData");
-    rightTex.subscribe(it, "/ambf/env/cameras/cameraR/ImageData");
 }
 
 static void
@@ -2023,7 +2036,6 @@ render_frame(int w,
 
 
 	glUseProgram(shader_program_id);
-    ros::spinOnce();
     if (view_index == 0){
         leftTex.update_texture(shader_program_id, view_index);
     }
