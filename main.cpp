@@ -553,6 +553,7 @@ struct TextureData{
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         // load and generate the texture
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, data);
 //        glGenerateMipmap(GL_TEXTURE_2D);
         stbi_image_free(data);
@@ -1961,7 +1962,7 @@ init_gl(uint32_t view_count,
 //    glEnable(GL_DEPTH_TEST);
     std::string file_path = __FILE__;
     std::string cur_path = file_path.substr(0, file_path.rfind("/"));
-    std::string image_path = cur_path + "/mars.png";
+    std::string image_path = cur_path + "/ambf.jpg";
     if(leftTex.load_image(image_path) && rightTex.load_image(image_path)){
     }
     else{
