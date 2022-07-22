@@ -370,6 +370,22 @@ render_frame(int w,
              GLuint image,
              bool depth_supported,
              GLuint depthbuffer);
+
+void
+render_image(int w,
+             int h,
+             GLuint shader_program_id,
+             GLuint VAO,
+             GLuint VAO_quad,
+             XrTime predictedDisplayTime,
+             int view_index,
+             XrSpaceLocation* hand_locations,
+             XrMatrix4x4f projectionmatrix,
+             XrMatrix4x4f viewmatrix,
+             GLuint framebuffer,
+             GLuint image,
+             bool depth_supported,
+             GLuint depthbuffer);
 #endif
 // =============================================================================
 
@@ -1627,9 +1643,14 @@ main(int argc, char** argv)
 
 			// TODO: should not be necessary, but is for SteamVR 1.16.4 (but not 1.15.x)
 			glXMakeCurrent(graphics_binding_gl.xDisplay, graphics_binding_gl.glxDrawable,
-			               graphics_binding_gl.glxContext);
+                           graphics_binding_gl.glxContext);
 
-            render_frame(w, h, gl_rendering.shader_program_id, gl_rendering.VAO, gl_rendering.VAO_quad,
+//            render_frame(w, h, gl_rendering.shader_program_id, gl_rendering.VAO, gl_rendering.VAO_quad,
+//                         frame_state.predictedDisplayTime, i, hand_locations, projection_matrix,
+//                         view_matrix, gl_rendering.framebuffers[i][acquired_index],
+//                         images[i][acquired_index].image, depth.supported, depth_image);
+
+            render_image(w, h, gl_rendering.shader_program_id, gl_rendering.VAO, gl_rendering.VAO_quad,
                          frame_state.predictedDisplayTime, i, hand_locations, projection_matrix,
                          view_matrix, gl_rendering.framebuffers[i][acquired_index],
                          images[i][acquired_index].image, depth.supported, depth_image);
@@ -1758,8 +1779,8 @@ init_sdl_window(Display** xDisplay,
 		return false;
 	}
 
-	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
-	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
 	SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
 
 	SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 0);
@@ -2120,5 +2141,61 @@ render_frame(int w,
         SDL_GL_SwapWindow(desktop_window);
     }
 }
+
+void render_image(int w,
+                  int h,
+                  GLuint shader_program_id,
+                  GLuint VAO, GLuint VAO_quad,
+                  XrTime predictedDisplayTime,
+                  int view_index,
+                  XrSpaceLocation *hand_locations,
+                  XrMatrix4x4f projectionmatrix,
+                  XrMatrix4x4f viewmatrix,
+                  GLuint framebuffer,
+                  GLuint image,
+                  bool depth_supported,
+                  GLuint depthbuffer)
+{
+    ros::spinOnce();
+    std::cerr << "VIEW IDX: " << view_index  << " | TEX ID: " << image << std::endl;
+    if (view_index == 0){
+        if (leftTex.new_msg){
+            glBindTexture(GL_TEXTURE_2D, image);
+            // set the texture wrapping/filtering options (on the currently bound texture object)
+            glTexSubImage2D(GL_TEXTURE_2D,
+                            0,
+                            0,
+                            0,
+                            leftTex.image_msg->width,
+                            leftTex.image_msg->height,
+                            GL_RGB,
+                            GL_UNSIGNED_BYTE,
+                            leftTex.image_msg->data.data());
+
+            leftTex.new_msg = false;
+        }
+    }
+    else if (view_index == 1){
+        if (rightTex.new_msg){
+            glBindTexture(GL_TEXTURE_2D, image);
+            // set the texture wrapping/filtering options (on the currently bound texture object)
+            glTexSubImage2D(GL_TEXTURE_2D,
+                            0,
+                            0,
+                            0,
+                            rightTex.image_msg->width,
+                            rightTex.image_msg->height,
+                            GL_RGB,
+                            GL_UNSIGNED_BYTE,
+                            rightTex.image_msg->data.data());
+
+            rightTex.new_msg = false;
+        }
+    }
+    else{
+        printf("INVALID VIEW INDEX \n");
+    }
+}
+
 
 #endif
